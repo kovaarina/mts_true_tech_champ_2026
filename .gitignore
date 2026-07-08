@@ -1,0 +1,20 @@
+# локальное окружение и сгенерированные на месте файлы — не коммитим
+.venv/
+__pycache__/
+*.pyc
+
+# runtime.ini генерируется скриптом запуска под конкретную машину (путь к .venv)
+**/controllers/*/runtime.ini
+
+# результаты локальных прогонов судьи
+**/controllers/referee/result.json
+result.json
+*.mp4
+
+# файлы проекта/кэш Webots
+*.wbproj
+.*.wbproj
+
+# ОС
+.DS_Store
+Thumbs.db

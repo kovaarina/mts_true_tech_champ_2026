@@ -74,9 +74,8 @@ class Referee:
         self.bonus_pct = self.cfg.get("scoring", {}).get("completion_bonus_pct", 30)
         self.fall = self.cfg.get("fall", {"z_min": 0.12, "tilt_max_deg": 60})
         self.tmo = self.cfg.get("timeouts", {"sim_time_s": 240, "wall_clock_s": 900})
-        # Artifact paths: the orchestrator's run_referee.sh sets REFEREE_RESULT/REFEREE_VIDEO to
-        # point at the shared /artifacts dir; those override the config so the same world works
-        # both locally (config-relative) and under Docker without editing the level.
+        # Optional: REFEREE_RESULT / REFEREE_VIDEO env vars override the config output paths
+        # when set (used by the automated judge); otherwise paths are resolved from the config.
         self.result_path = os.environ.get("REFEREE_RESULT") or self.cfg.get("result_path", "result.json")
         self.video_path = os.environ.get("REFEREE_VIDEO") or self.cfg.get("video_path", "run.mp4")
 
@@ -104,7 +103,7 @@ class Referee:
                       f"door={self._door is not None}", flush=True)
 
         self._recording = False
-        # record if the config asks, or the orchestrator forces it (REFEREE_VIDEO set + RECORD=1)
+        # record if the config asks, or REFEREE_RECORD=1 is set in the environment
         want_video = self.cfg.get("record_video") or os.environ.get("REFEREE_RECORD") == "1"
         if want_video:
             fn = self.video_path
