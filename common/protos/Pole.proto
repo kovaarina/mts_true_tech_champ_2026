@@ -1,0 +1,52 @@
+#VRML_SIM R2025a utf8
+# template language: javascript
+# Static slalom pole — an immovable traffic-pylon the robot must weave around.
+# Vivid orange body with a white reflective band (cosmetic). boundingObject = the body
+# cylinder only, so collision is unchanged from a plain pole.
+PROTO Pole [
+  field SFVec3f  translation 0 0 0.3
+  field SFFloat  radius      0.05
+  field SFFloat  height      0.6
+  field SFColor  color       0.95 0.42 0.05
+  field SFString name        "pole"
+]
+{
+  %<
+    const r = fields.radius.value;
+    const h = fields.height.value;
+    const bandH = Math.max(0.04, h * 0.14);
+    const bandZ = h * 0.22;                 // band a bit above centre
+  >%
+  Solid {
+    translation IS translation
+    name IS name
+    children [
+      Shape {
+        appearance PBRAppearance {
+          baseColor IS color
+          emissiveColor IS color
+          emissiveIntensity 0.25
+          roughness 0.45
+          metalness 0.1
+        }
+        geometry Cylinder { radius IS radius height IS height subdivision 24 }
+      }
+      # white reflective band (cosmetic; same radius → no protrusion, no separate collision)
+      Pose {
+        translation 0 0 %<= bandZ >%
+        children [
+          Shape {
+            appearance PBRAppearance {
+              baseColor 0.95 0.95 0.97
+              emissiveColor 0.6 0.6 0.62
+              roughness 0.25
+              metalness 0.2
+            }
+            geometry Cylinder { radius %<= r * 1.02 >% height %<= bandH >% subdivision 24 }
+          }
+        ]
+      }
+    ]
+    boundingObject Cylinder { radius IS radius height IS height subdivision 16 }
+  }
+}

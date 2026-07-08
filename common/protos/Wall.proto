@@ -1,0 +1,52 @@
+#VRML_SIM R2025a utf8
+# template language: javascript
+# Static wall / barrier for the obstacle course (maze walls, corridor sides).
+# Solid with a boundingObject but NO Physics → immovable; the robot collides with it.
+# Visual: a semi-gloss arena panel + a glowing neon top-trim (cosmetic, no collision) so the
+# maze reads like a lit competition arena. boundingObject = the main box only (collision unchanged).
+PROTO Wall [
+  field SFVec3f    translation 0 0 0.25
+  field SFRotation rotation    0 0 1 0
+  field SFVec3f    size        1 0.1 0.5
+  field SFColor    color       0.20 0.22 0.28
+  field SFColor    trimColor   0.89 0.04 0.07
+  field SFString   name        "wall"
+]
+{
+  %<
+    const s = fields.size.value;
+    const trimT = 0.04;                     // trim thickness (z)
+  >%
+  Solid {
+    translation IS translation
+    rotation IS rotation
+    name IS name
+    children [
+      Shape {
+        appearance PBRAppearance {
+          baseColor IS color
+          roughness 0.45
+          metalness 0.2
+        }
+        geometry Box { size IS size }
+      }
+      # glowing neon top-trim (cosmetic; sits ON TOP of the wall — no overlap, no z-fighting)
+      Pose {
+        translation 0 0 %<= s.z / 2 + trimT / 2 + 0.001 >%
+        children [
+          Shape {
+            appearance PBRAppearance {
+              baseColor IS trimColor
+              emissiveColor IS trimColor
+              emissiveIntensity 4.0
+              roughness 0.3
+              metalness 0.0
+            }
+            geometry Box { size %<= s.x + 0.012 >% %<= s.y + 0.012 >% %<= trimT >% }
+          }
+        ]
+      }
+    ]
+    boundingObject Box { size IS size }
+  }
+}

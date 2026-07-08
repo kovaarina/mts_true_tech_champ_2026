@@ -1,0 +1,63 @@
+#VRML_SIM R2025a utf8
+# Competition checkpoint / goal zone for the Go2 obstacle course — a glowing holographic ring.
+# PHYSICS-FREE (no boundingObject): the robot passes through freely; the referee (Supervisor)
+# detects entry by comparing the robot's XY to `translation` + `radius`, and recolours it on score
+# by setting the exposed `color` field (all shapes are `IS color`-linked, so the change is live).
+#
+# Visual: a translucent emissive column + a bright glowing disc on the floor, so the goal reads as
+# a holo-target. None of it collides; only `radius` (the 2D zone) scores.
+PROTO Checkpoint [
+  field SFVec3f  translation  0 0 0
+  field SFString name         "checkpoint"
+  field SFFloat  radius       0.4
+  field SFFloat  height       1.2
+  field SFColor  color        0.15 0.5 1.0
+  field SFFloat  transparency 0.6
+]
+{
+  Solid {
+    translation IS translation
+    name IS name
+    children [
+      # translucent glowing column
+      Shape {
+        appearance PBRAppearance {
+          baseColor IS color
+          emissiveColor IS color
+          emissiveIntensity 1.4
+          transparency IS transparency
+          metalness 0
+          roughness 1
+        }
+        geometry Cylinder {
+          radius IS radius
+          height IS height
+          subdivision 40
+        }
+      }
+      # bright disc on the floor (the target footprint) — strong glow, low transparency
+      Pose {
+        translation 0 0 0.012
+        children [
+          Shape {
+            appearance PBRAppearance {
+              baseColor IS color
+              emissiveColor IS color
+              emissiveIntensity 3.0
+              transparency 0.15
+              metalness 0
+              roughness 0.4
+            }
+            geometry Cylinder {
+              radius IS radius
+              height 0.02
+              subdivision 40
+            }
+          }
+        ]
+      }
+    ]
+    # No boundingObject and no Physics → the robot cannot collide with it; the referee
+    # scores purely from the robot's position. Do NOT add physics here.
+  }
+}

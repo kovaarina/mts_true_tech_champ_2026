@@ -1,0 +1,61 @@
+{
+  "level": 1,
+  "name": "Qualification",
+  "robot_def": "ROBOT",
+  "checkpoints": [
+    {
+      "name": "cp1",
+      "def": "CP1",
+      "x": 2.5,
+      "y": 0.0,
+      "radius": 0.5,
+      "points": 10
+    },
+    {
+      "name": "cp2",
+      "def": "CP2",
+      "x": 6.0,
+      "y": 0.0,
+      "radius": 0.5,
+      "points": 10
+    },
+    {
+      "name": "cp3",
+      "def": "CP3",
+      "x": 6.4,
+      "y": 1.8,
+      "radius": 0.45,
+      "points": 10
+    },
+    {
+      "name": "cp4",
+      "def": "CP4",
+      "x": 9.6,
+      "y": 4.2,
+      "radius": 0.45,
+      "points": 10
+    }
+  ],
+  "finish": {
+    "name": "finish",
+    "def": "FINISH",
+    "x": 11.8,
+    "y": 5.2,
+    "radius": 0.3,
+    "points": 10,
+    "hold_s": 3.0
+  },
+  "scoring": {
+    "completion_bonus_pct": 30
+  },
+  "timeouts": {
+    "sim_time_s": 240,
+    "wall_clock_s": 900
+  },
+  "fall": {
+    "z_min": 0.12,
+    "tilt_max_deg": 60
+  },
+  "record_video": false,
+  "result_path": "result.json"
+}

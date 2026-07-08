@@ -1,0 +1,129 @@
+#VRML_SIM R2025a utf8
+# Go2 competition — Level 1 "Qualification" (straight → S-chicane → finish).
+# Fixed basicTimeStep for determinism. ROBOT = participant (controller swapped at judging);
+# REF = referee supervisor. Visuals (background/light/floor/decor) are cosmetic ONLY — all
+# collision geometry (floor box, walls, robot) is unchanged, so judged runs stay deterministic.
+
+EXTERNPROTO "../common/protos/Go2.proto"
+EXTERNPROTO "../common/protos/Checkpoint.proto"
+EXTERNPROTO "../common/protos/Wall.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackground.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/toys/protos/RubberDuck.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/factory/containers/protos/PlasticCrate.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/factory/pallet/protos/WoodenPalletStack.proto"
+
+# Physics = EXACTLY the verified ai-robot/sim go2_rl_world (the firmware MNN policy walks
+# stably on it): timestep 4 ms, friction 1.3, no damping/CFM overrides. Do not tweak.
+WorldInfo {
+  basicTimeStep 4
+  contactProperties [
+    ContactProperties {
+      material1 "default"
+      material2 "ground"
+      coulombFriction [ 1.3 ]
+      bounce 0
+    }
+  ]
+}
+Viewpoint {
+  orientation -0.32 0.31 0.9 1.66
+  position 0.2 -3.8 3.0
+  follow "Go2"
+  followType "Tracking Shot"
+  followSmoothness 0.35
+}
+TexturedBackground { texture "factory" }
+TexturedBackgroundLight { texture "factory" luminosity 1.6 }
+DirectionalLight { direction 0.6 -1 -0.9 intensity 2.2 castShadows TRUE }
+
+# ── floor: checkerboard arena mat (collision box unchanged) ──
+DEF FLOOR Solid {
+  translation 3.5 0 -0.5
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColorMap ImageTexture { url [ "../common/protos/textures/Checker.png" ] }
+        textureTransform TextureTransform { scale 12 8 }
+        roughness 0.6
+        metalness 0.0
+      }
+      geometry Box { size 24 16 1.0 }
+    }
+  ]
+  boundingObject Box { size 24 16 1.0 }
+  contactMaterial "ground"
+}
+
+# ── participant robot (its controller is the one file swapped at judging) ──
+# PHYSICAL Go2: walks under full physics, torque-driven by the real firmware locomotion
+# policy (see common/locomotion/policy_walk.py). supervisor FALSE — it cannot self-score.
+DEF ROBOT Go2 {
+  translation 0 0 0.34
+  rotation 0 0 1 0
+  name "Go2"
+  controller "participant"
+  supervisor FALSE
+}
+
+# ── referee (separate supervisor controller; reads robot pose, scores, writes result.json) ──
+DEF REF Robot {
+  name "referee"
+  controller "referee"
+  controllerArgs [ "../../config/level1.json" ]
+  supervisor TRUE
+}
+
+# ── checkpoints (glowing holo goals; referee recolours on score) ──
+# Course: straight → S-chicane → cp2 → LEFT (cp3) → RIGHT → LEFT (cp4) → RIGHT → finish (4 turns).
+DEF CP1 Checkpoint { translation 2.5 0 0.6 name "cp1" radius 0.5 color 0.95 0.85 0.1 }
+DEF CP2 Checkpoint { translation 6.0 0 0.6 name "cp2" radius 0.5 }
+DEF CP3 Checkpoint { translation 6.4 1.8 0.6 name "cp3" radius 0.45 color 0.2 0.9 0.75 }
+DEF CP4 Checkpoint { translation 9.6 4.2 0.6 name "cp4" radius 0.45 color 0.95 0.55 0.15 }
+DEF FINISH Checkpoint { translation 11.8 5.2 0.6 name "finish" radius 0.3 color 0.6 0.2 0.9 }
+
+# ── S-chicane maze: weave around Wall1 (pass at y>0), then Wall2 (pass at y<0) ──
+Wall { translation 4.0 -0.6 0.25 size 0.1 1.2 0.5 name "maze_w1" }
+Wall { translation 5.2  0.6 0.25 size 0.1 1.2 0.5 name "maze_w2" }
+
+# ── snake after cp2: LEFT (north, cp3) → RIGHT (east) → LEFT (north, cp4) → RIGHT (east) → finish.
+# All corridors 1.8 m wide.
+Wall { translation 7.3 0.3  0.25 size 0.1 2.4 0.5 name "turn_e" }    # outer wall of turn 1
+Wall { translation 8.9 1.5  0.25 size 3.2 0.1 0.5 name "legc_s" }    # south side of east leg C
+Wall { translation 5.5 2.05 0.25 size 0.1 2.5 0.5 name "legb_w" }    # west side of north leg B
+Wall { translation 7.1 3.3  0.25 size 3.2 0.1 0.5 name "legc_n" }    # north side of leg C (ends at turn 3)
+Wall { translation 10.5 2.9 0.25 size 0.1 2.8 0.5 name "legd_e" }    # east side of north leg D (outer of turn 3)
+Wall { translation 8.7 4.7  0.25 size 0.1 2.8 0.5 name "legd_w" }    # west side of leg D
+Wall { translation 10.5 6.1 0.25 size 3.6 0.1 0.5 name "lege_n" }    # north side of east leg E (outer of turn 4)
+Wall { translation 11.4 4.3 0.25 size 1.8 0.1 0.5 name "lege_s" }    # south side of leg E
+
+# ══════════ cosmetic decor (all OUTSIDE the course; non-colliding or well clear) ══════════
+# MTS sponsor banners (custom, non-colliding) flanking the course
+DEF BANNER_N Solid {
+  translation 3.75 4.3 1.15
+  children [
+    Shape { appearance PBRAppearance { baseColor 0.89 0.04 0.07 emissiveColor 0.5 0.02 0.03 emissiveIntensity 0.5 roughness 0.4 metalness 0.1 } geometry Box { size 4.0 0.06 1.1 } }
+    Pose { translation -1.9 0 -0.9 children [ Shape { appearance PBRAppearance { baseColor 0.14 0.14 0.16 roughness 0.5 metalness 0.6 } geometry Box { size 0.08 0.08 1.9 } } ] }
+    Pose { translation  1.9 0 -0.9 children [ Shape { appearance PBRAppearance { baseColor 0.14 0.14 0.16 roughness 0.5 metalness 0.6 } geometry Box { size 0.08 0.08 1.9 } } ] }
+  ]
+  name "banner_n"
+}
+DEF BANNER_S Solid {
+  translation 3.75 -3.2 1.15
+  children [
+    Shape { appearance PBRAppearance { baseColor 0.89 0.04 0.07 emissiveColor 0.5 0.02 0.03 emissiveIntensity 0.5 roughness 0.4 metalness 0.1 } geometry Box { size 4.0 0.06 1.1 } }
+    Pose { translation -1.9 0 -0.9 children [ Shape { appearance PBRAppearance { baseColor 0.14 0.14 0.16 roughness 0.5 metalness 0.6 } geometry Box { size 0.08 0.08 1.9 } } ] }
+    Pose { translation  1.9 0 -0.9 children [ Shape { appearance PBRAppearance { baseColor 0.14 0.14 0.16 roughness 0.5 metalness 0.6 } geometry Box { size 0.08 0.08 1.9 } } ] }
+  ]
+  name "banner_s"
+}
+
+# library props (loaded from Webots' online catalogue; referee container has network)
+RubberDuck { translation 1.0 2.3 0 scale 2 name "duck1" }
+RubberDuck { translation 2.0 2.3 0 scale 2 name "duck2" }
+RubberDuck { translation 3.0 2.3 0 scale 2 name "duck3" }
+RubberDuck { translation 4.0 2.3 0 scale 2 name "duck4" }
+RubberDuck { translation 5.0 2.3 0 scale 2 name "duck5" }
+PlasticCrate { translation 13.4 5.2 0 name "crate1" }
+PlasticCrate { translation 13.4 5.2 0.28 name "crate2" }
+WoodenPalletStack { translation 9.2 -2.2 0 name "pallets" }

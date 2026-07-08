@@ -1,0 +1,37 @@
+#VRML_SIM R2025a utf8
+# Graspable ball for the sorting task. Passive Connector on top mates with the arm's
+# electromagnet ("arm_magnet"). Light so the arm carries it without upsetting the walk.
+PROTO Ball [
+  field SFVec3f  translation 0 0 0.1
+  field SFColor  color       0.9 0.1 0.1
+  field SFString name        "ball"
+]
+{
+  Solid {
+    translation IS translation
+    name IS name
+    children [
+      Shape {
+        appearance PBRAppearance {
+          baseColor IS color
+          emissiveColor IS color
+          emissiveIntensity 0.25
+          roughness 0.35
+          metalness 0.1
+        }
+        geometry Sphere { radius 0.06 subdivision 3 }
+      }
+      Connector {
+        translation 0 0 0.055
+        name "ball_port"
+        type "passive"
+        distanceTolerance 0.10
+        axisTolerance 3.14
+        rotationTolerance 3.14
+        numberOfRotations 0
+      }
+    ]
+    boundingObject Sphere { radius 0.06 }
+    physics Physics { density -1 mass 0.10 }
+  }
+}
