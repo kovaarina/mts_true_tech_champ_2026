@@ -221,13 +221,19 @@ class Go2:
         return tuple(self._imu.getRollPitchYaw()) if self._imu else (0.0, 0.0, 0.0)
 
     def lidar(self):
-        """Full 3D range image (m): horizontalResolution × numberOfLayers values, ordered layer
-        by layer. Inf = no return. For a simple 2D scan use lidar_layer(). See lidar_info()."""
+        """Full 3D LiDAR cloud — THIS is the scan to use for walls & navigation. Returns
+        horizontalResolution × numberOfLayers ranges (m), layer by layer; `inf` = no return. Reshape
+        with lidar_info() as [layer][azimuth]. It's a 3D dome, so walls are captured at any range
+        regardless of sensor height or the body's gait pitch. Build an obstacle map by keeping, per
+        azimuth, the nearest return whose 3D hit point is ABOVE the floor (that also naturally drops
+        flat floor-markers such as checkpoints). The widest down/rear rays graze the robot's own body
+        (a roughly constant near return ~0.2 m) — filter those. Ready-to-use snippet in API.md."""
         return list(self._lidar.getRangeImage()) if self._lidar else []
 
     def lidar_layer(self, layer=None):
-        """One horizontal ring of ranges (m). Default = the middle (near-horizontal) layer — a
-        clean 360° 2D scan that's usually all you need for maze navigation."""
+        """One raw horizontal ring (m) from a SINGLE layer — optional/advanced. The default layer
+        is near-horizontal at sensor height, so it can skim OVER low walls; for reliable wall
+        detection use the full 3D cloud lidar() instead. Pass `layer` (0..layers-1) for a set ring."""
         if not self._lidar:
             return []
         if layer is None:

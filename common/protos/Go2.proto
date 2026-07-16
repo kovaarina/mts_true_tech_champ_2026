@@ -37,15 +37,17 @@ PROTO Go2 [
       Gyro {
         name "gyro"
       }
-      # 3D LiDAR — front-top dome like the real Go2 "L1"; 16 layers sweep OVER the body
-      # (vertical ±10° chosen so no layer hits the robot itself — verified in sim).
+      # 3D LiDAR — front-top dome like the real Go2 "L1". Wide vertical FOV (±~34°) so the
+      # 3D cloud covers walls/floor at any range regardless of body height or gait pitch. USE THE
+      # FULL 3D CLOUD (go2_api.lidar()); a single horizontal ring can skim over low obstacles.
+      # NB: the widest down/rear rays graze the robot itself — filter near-body returns (as on hw).
       Lidar {
         translation 0.20 0 0.16
         name "lidar"
         horizontalResolution 360
         fieldOfView 6.2831853
-        verticalFieldOfView 0.35
-        numberOfLayers 16
+        verticalFieldOfView 1.2
+        numberOfLayers 24
         maxRange 12
         minRange 0.08
         near 0.02
