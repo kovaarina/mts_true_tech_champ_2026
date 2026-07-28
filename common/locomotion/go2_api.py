@@ -199,11 +199,10 @@ class Go2:
     # ── the tick: run the walk policy → advance physics → refresh sensors ────────
     def step(self):
         self._walk.tick()
-        if self._bridge is not None:
-            self._bridge.publish()
         r = self.robot.step(self.ts)
         self.arm._poll()                       # drain manipulator telemetry (if present)
         if self._bridge is not None:
+            self._bridge.publish()             # AFTER the step: sensors now hold this tick's data
             self._bridge.spin()
         return r != -1
 
@@ -228,7 +227,10 @@ class Go2:
         azimuth, the nearest return whose 3D hit point is ABOVE the floor (that also naturally drops
         flat floor-markers such as checkpoints). The widest down/rear rays graze the robot's own body
         (a roughly constant near return ~0.2 m) — filter those. Ready-to-use snippet in API.md."""
-        return list(self._lidar.getRangeImage()) if self._lidar else []
+        if not self._lidar:
+            return []
+        img = self._lidar.getRangeImage()      # None before the first robot.step()
+        return list(img) if img else []
 
     def lidar_layer(self, layer=None):
         """One raw horizontal ring (m) from a SINGLE layer — optional/advanced. The default layer
@@ -238,7 +240,8 @@ class Go2:
             return []
         if layer is None:
             layer = self._lidar.getNumberOfLayers() // 2
-        return list(self._lidar.getLayerRangeImage(layer))
+        img = self._lidar.getLayerRangeImage(layer)   # None before the first robot.step()
+        return list(img) if img else []
 
     def lidar_info(self):
         """(h_fov_rad, h_res, max_range, layers, v_fov_rad). Reshape lidar() as [layer][h_res];
