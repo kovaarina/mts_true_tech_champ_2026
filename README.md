@@ -5,9 +5,9 @@
 пишешь только высокоуровневое управление. Полное описание уровня — **[TASK.md](TASK.md)**,
 справочник API робота и манипулятора — **[API.md](API.md)**.
 
-## Ты редактируешь ОДИН файл
+## Твоё решение — папка controllers/participant/
 ```
-controllers/participant/participant.py
+controllers/participant/          # вся папка: модули, YAML-конфиги, participant.py (точка входа)
 ```
 Всё остальное (мир, робот, локомоция `go2_api`, судья) фиксировано и одинаково для всех.
 
@@ -34,7 +34,7 @@ controllers/participant/participant.py
 common/                 # фиксированный движок: робот, локомоция (go2_api), судья, объекты
 worlds/level1.wbt      # пример мира; на судействе — сгенерированная трасса, решению недоступна
 config/level1.json     # пример трассы; на судействе карта ДРУГАЯ, решению этот файл НЕДОСТУПЕН
-controllers/participant # твой participant.py (единственный редактируемый файл)
+controllers/participant # ТВОЁ РЕШЕНИЕ — вся папка (модули, конфиги Nav2/SLAM, participant.py)
 controllers/referee     # локальный скорер (двери/счёт/result.json)
 setup.* run.* INSTALL.md API.md TASK.md
 ```
