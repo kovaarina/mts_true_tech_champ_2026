@@ -32,8 +32,8 @@ controllers/participant/participant.py
 ## Структура
 ```
 common/                 # фиксированный движок: робот, локомоция (go2_api), судья, объекты
-worlds/level1.wbt      # мир уровня
-config/level1.json     # чекпоинты, финиш, таймауты, бонус (не секрет — читай)
+worlds/level1.wbt      # пример мира; на судействе — сгенерированная трасса, решению недоступна
+config/level1.json     # пример трассы; на судействе карта ДРУГАЯ, решению этот файл НЕДОСТУПЕН
 controllers/participant # твой participant.py (единственный редактируемый файл)
 controllers/referee     # локальный скорер (двери/счёт/result.json)
 setup.* run.* INSTALL.md API.md TASK.md
