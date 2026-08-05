@@ -137,6 +137,18 @@ class Referee:
                 + sum(t["points"] for t in self.man_tasks if t["done"]))
 
     def _final(self, reason):
+        # ANTI-SWEEP: a manipulation task is credited ONLY if its object is in its zone at the FINAL
+        # resting state — momentary passes while the ball is held/swept do NOT count. This makes the
+        # score reflect where each object is actually LEFT (one object → one slot), not what it
+        # brushed past. Combined with shuffled ball↔slot colours, a blind sweep can't farm points.
+        for task in self.man_tasks:
+            node = self._man_nodes.get(task["object_def"])
+            if node is not None:
+                px, py, pz = node.getPosition()
+                task["done"] = (math.hypot(px - task["x"], py - task["y"]) <= task["radius"]
+                                and task.get("z_min", -1e9) <= pz <= task.get("z_max", 1e9))
+            else:
+                task["done"] = False
         base = self._base_score()
         completed = (all(c["scored"] for c in self.cps)
                      and all(t["done"] for t in self.man_tasks)
@@ -216,25 +228,34 @@ class Referee:
                 self._final("timeout")
                 return
 
-            # manipulation tasks: object inside its zone → done (latched), points
+            # manipulation: an object counts ONLY when it comes to REST in its zone; the POINTS
+            # are scored from the FINAL resting position (see _final). A ball merely SWEPT through a
+            # zone while held never settles here, so the old "carry the held ball over every slot"
+            # exploit earns nothing. This block only tracks a SETTLED placement (stationary in-zone
+            # for SETTLE_S) to open the shortcut door — the real credit is the end-state check.
             if self.man_tasks:
                 for task in self.man_tasks:
-                    if task["done"]:
-                        continue
                     node = self._man_nodes.get(task["object_def"])
                     if node is None:
                         continue
                     px, py, pz = node.getPosition()
-                    if (math.hypot(px - task["x"], py - task["y"]) <= task["radius"]
-                            and task.get("z_min", -1e9) <= pz <= task.get("z_max", 1e9)):
-                        task["done"] = True
+                    in_zone = (math.hypot(px - task["x"], py - task["y"]) <= task["radius"]
+                               and task.get("z_min", -1e9) <= pz <= task.get("z_max", 1e9))
+                    last = task.get("_last"); task["_last"] = (px, py, pz)
+                    moved = math.dist((px, py, pz), last) if last else 1.0
+                    if in_zone and moved < 0.004:          # settled — not being carried/swept through
+                        task["_settle"] = task.get("_settle", 0.0) + self.ts / 1000.0
+                    else:
+                        task["_settle"] = 0.0
+                    if not task.get("_placed") and task["_settle"] >= 0.4:   # ~0.4 s at rest in zone
+                        task["_placed"] = True
                         task["sim_time"] = round(t, 2)
-                        done_n = sum(1 for k in self.man_tasks if k["done"])
-                        print(f"[referee] task {task['name']} DONE (+{task['points']}) @ {t:.1f}s "
-                              f"[{done_n}/{len(self.man_tasks)}]", flush=True)
-                        if done_n == len(self.man_tasks) and self._door is not None:
+                        placed_n = sum(1 for k in self.man_tasks if k.get("_placed"))
+                        print(f"[referee] task {task['name']} placed @ {t:.1f}s "
+                              f"[{placed_n}/{len(self.man_tasks)}] (points scored on final rest)", flush=True)
+                        if placed_n == len(self.man_tasks) and self._door is not None:
                             self._door_z = 0.0          # start the door-open animation
-                            print("[referee] all tasks done — door opening", flush=True)
+                            print("[referee] all placed — door opening", flush=True)
                 # sliding-door animation: 0.5 m/s downward until fully dropped
                 if self._door_z is not None and self._door_z < self._door_drop:
                     step = 0.5 * self.ts / 1000.0
