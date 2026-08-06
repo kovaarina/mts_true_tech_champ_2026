@@ -66,7 +66,7 @@ while robot.step():
 В образе есть **`build-essential`, `cmake`, `python3-colcon-common-extensions`, `python3-rosdep`** — можно собирать colcon-воркспейс. Если ваше решение — colcon-пакет (свои msg/сервисы, C++-узлы), положите его в `controllers/participant/` и соберите из `participant.py` на старте:
 
 ```bash
-# пример: собрать и заソースить воркспейс перед запуском узлов
+# пример: собрать и зарсить воркспейс перед запуском узлов
 colcon build --symlink-install && source install/setup.bash
 ```
 
