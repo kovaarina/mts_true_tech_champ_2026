@@ -145,6 +145,8 @@ def arm_tick(arm):
 мост крутится рядом. Манипулятор в ROS-мост не выведен — им управляй через `robot.arm`.
 
 **Судейский образ содержит ROS 2 Humble** (Ubuntu 22.04, Python 3.10), проверено на судейском стенде:
+
+> ФС образа регистрозависимая (Linux): `Point3D.py` и `point3D` — разные имена; следите за регистром в импортах.
 - `rclpy`, `geometry_msgs` / `sensor_msgs` / `nav_msgs`, `tf2_ros`;
 - **`navigation2` (Nav2)**, **`slam_toolbox`** — можно строить SLAM/планирование;
 - DDS — CycloneDDS, режим `ROS_LOCALHOST_ONLY=1` (мост замкнут на loopback).
