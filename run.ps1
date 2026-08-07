@@ -1,4 +1,4 @@
-# Запуск уровня в Webots (Windows). Требует setup.ps1 и установленный Webots R2025a (INSTALL.md).
+﻿# Запуск уровня в Webots (Windows). Требует setup.ps1 и установленный Webots R2025a (INSTALL.md).
 #   powershell -ExecutionPolicy Bypass -File .\run.ps1
 $ErrorActionPreference = "Stop"
 $HERE = Split-Path -Parent $MyInvocation.MyCommand.Path
