@@ -776,7 +776,7 @@ PROTO Go2 [
       }
       Solid {
         translation -0.025570 0.000000 0.042320
-        name "imu"
+        name "imu_link"
         physics NULL
       }
       Solid {
