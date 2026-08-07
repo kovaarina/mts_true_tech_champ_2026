@@ -79,7 +79,7 @@ DEF REF Robot {
 DEF CP1 Checkpoint { translation 2.5 0 0.03 name "cp1" radius 0.5 color 0.95 0.85 0.1 }
 DEF CP2 Checkpoint { translation 6.0 0 0.03 name "cp2" radius 0.5 }
 DEF CP3 Checkpoint { translation 6.4 1.8 0.03 name "cp3" radius 0.45 }
-DEF CP4 Checkpoint { translation 9.6 4.2 0.03 name "cp4" radius 0.45 color 0.95 0.55 0.15 }
+DEF CP4 Checkpoint { translation 9.6 4.2 0.03 name "cp4" radius 0.45 }
 DEF FINISH Checkpoint { translation 11.8 5.2 0.03 name "finish" radius 0.3 color 0.6 0.2 0.9 }
 
 # ── S-chicane maze: weave around Wall1 (pass at y>0), then Wall2 (pass at y<0) ──
