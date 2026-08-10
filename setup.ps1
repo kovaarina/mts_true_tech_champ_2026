@@ -1,4 +1,4 @@
-﻿# Установка окружения (Windows, PowerShell). Один раз перед запуском.
+﻿﻿# Установка окружения (Windows, PowerShell). Один раз перед запуском.
 #   powershell -ExecutionPolicy Bypass -File .\setup.ps1
 # Создаёт локальный .venv, ставит numpy+MNN, прогоняет проверку локомоции (без Webots).
 # Webots ставится отдельно — см. INSTALL.md.
