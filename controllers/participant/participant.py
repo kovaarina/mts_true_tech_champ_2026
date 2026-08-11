@@ -30,6 +30,10 @@ def wrap(angle):
     return (angle + math.pi) % (2.0 * math.pi) - math.pi
 
 
+def blend_angle(current, target, amount):
+    return wrap(current + clamp(amount, 0.0, 1.0) * wrap(target - current))
+
+
 class Navigator:
     """Marker tracking plus a small vector-field local planner."""
 
@@ -40,11 +44,15 @@ class Navigator:
 
         self.checkpoints = 0
         self.target = None                 # filtered world (x, y) of the current marker
+        self.visual_bearing = None
         self.target_samples = deque(maxlen=7)
+        self.start_pose = robot.pose()
+        self.previous_checkpoint = None
         self.last_target = None
         self.last_seen = -100.0
         self.waiting_for_next = False
         self.reached_at = -100.0
+        self.target_first_seen = -100.0
 
         self.turn_memory = 0.0
         self.turn_lock_until = -1.0
@@ -53,16 +61,24 @@ class Navigator:
         self.wz_cmd = 0.0
         self.map_resolution = 0.16
         self.wall_cells = set()
+        self.hard_wall_cells = set()
         self.blocked_cells = set()
         self.free_cells = set()
         self.visit_counts = {}
         self.occupied = self.blocked_cells
         self.path = []
         self.path_goal = None
+        self.path_goal_kind = None
         self.next_plan_time = 0.0
         self.next_map_save_time = 0.0
         self.last_visit_cell = None
         self.wall_distance_cache = {}
+        self.exploration_goal = None
+        self.forward_bias_yaw = 0.0
+        self.last_progress_pose = None
+        self.stuck_since = None
+        self.recovery_until = -1.0
+        self.recovery_turn = 1.0
         self.map_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                      "lidar_map.npz")
 
@@ -116,8 +132,10 @@ class Navigator:
         # A trimmed centroid is steadier at the anti-aliased edge of a marker.
         cx = float(np.median(xs))
         cy = float(np.median(ys))
+        bearing = -math.atan((cx - (self.cam_w - 1) / 2.0) /
+                             (self.cam_w / (2.0 * math.tan(self.cam_fov / 2.0))))
         point = self.pixel_to_ground(cx, cy)
-        return int(xs.size), cx, cy, point
+        return int(xs.size), cx, cy, point, bearing
 
     def pixel_to_ground(self, u, v):
         """Project an image pixel onto z=0 using the measured body attitude."""
@@ -147,7 +165,8 @@ class Navigator:
     def set_measurement(self, measurement, now, x, y):
         if measurement is None:
             return
-        _, _, _, point = measurement
+        _, _, _, point, bearing = measurement
+        self.visual_bearing = bearing
         self.last_seen = now
         if point is None:
             return
@@ -163,13 +182,16 @@ class Navigator:
         # A sudden marker jump while standing at the old target means the referee has
         # recoloured the old checkpoint and highlighted the next one.
         if self.target is not None and math.dist(point, self.target) > 0.9:
-            if math.hypot(x - self.target[0], y - self.target[1]) < 0.65:
+            if (math.hypot(x - self.target[0], y - self.target[1]) < 0.80 or
+                    now - self.target_first_seen > 1.0):
                 self.mark_checkpoint_reached(now)
                 self.waiting_for_next = False
                 self.target_samples.clear()
             else:
                 return
 
+        if self.target is None:
+            self.target_first_seen = now
         self.target_samples.append(point)
         points = np.asarray(self.target_samples)
         self.target = (float(np.median(points[:, 0])), float(np.median(points[:, 1])))
@@ -177,9 +199,29 @@ class Navigator:
     def mark_checkpoint_reached(self, now):
         if self.checkpoints >= 4:
             return
+        reached_target = self.target
+        robot_x, robot_y, robot_yaw = self.robot.pose()
+        reached_pose = (robot_x, robot_y)
         self.checkpoints += 1
+        if self.previous_checkpoint is not None:
+            dx = reached_pose[0] - self.previous_checkpoint[0]
+            dy = reached_pose[1] - self.previous_checkpoint[1]
+            if math.hypot(dx, dy) > 0.35:
+                self.forward_bias_yaw = math.atan2(dy, dx)
+        else:
+            sx, sy, syaw = self.start_pose
+            dx = reached_pose[0] - sx
+            dy = reached_pose[1] - sy
+            self.forward_bias_yaw = math.atan2(dy, dx) if math.hypot(dx, dy) > 0.35 else syaw
+        if self.checkpoints == 1:
+            sx, sy, syaw = self.start_pose
+            dx = reached_pose[0] - sx
+            dy = reached_pose[1] - sy
+            self.forward_bias_yaw = math.atan2(dy, dx) if math.hypot(dx, dy) > 0.35 else syaw
+        self.previous_checkpoint = reached_pose
         self.last_target = self.target
         self.target = None
+        self.visual_bearing = None
         self.target_samples.clear()
         self.waiting_for_next = True
         self.reached_at = now
@@ -303,14 +345,19 @@ class Navigator:
         valid_hit = np.isfinite(rr) & (rr < self.max_range - 0.05) & (rr > 0.42)
         wx = x + rr[valid_hit] * np.cos(yaw + bearings[valid_hit])
         wy = y + rr[valid_hit] * np.sin(yaw + bearings[valid_hit])
+        hit_distances = rr[valid_hit]
         # Inflate by the body half-width plus a small gait margin.
-        inflation = 3
+        inflation = 2
         new_wall = False
-        for px, py in zip(wx, wy):
+        for px, py, distance in zip(wx, wy, hit_distances):
             cell = self.grid_cell(float(px), float(py))
             if cell not in self.wall_cells:
                 new_wall = True
             self.wall_cells.add(cell)
+            if distance <= 3.2:
+                self.hard_wall_cells.add(cell)
+            else:
+                continue
             for dx in range(-inflation, inflation + 1):
                 for dy in range(-inflation, inflation + 1):
                     if dx * dx + dy * dy <= inflation * inflation + 1:
@@ -324,7 +371,8 @@ class Navigator:
         cached = self.wall_distance_cache.get(cell)
         if cached is not None:
             return cached
-        if not self.wall_cells:
+        walls = self.hard_wall_cells or self.wall_cells
+        if not walls:
             return max_radius + 1
         best = max_radius + 1
         cx, cy = cell
@@ -332,7 +380,7 @@ class Navigator:
             for dy in range(-max_radius, max_radius + 1):
                 if dx * dx + dy * dy >= best * best:
                     continue
-                if (cx + dx, cy + dy) in self.wall_cells:
+                if (cx + dx, cy + dy) in walls:
                     best = max(1, int(round(math.hypot(dx, dy))))
         self.wall_distance_cache[cell] = best
         return best
@@ -342,7 +390,7 @@ class Navigator:
         # Keep the route wall-aware: not scraping the wall, but still using walls
         # as corridor boundaries instead of drifting through unknown space.
         if wall_distance <= 2:
-            wall_cost = 4.0
+            wall_cost = 2.4
         elif wall_distance <= 4:
             wall_cost = 0.0
         elif wall_distance <= 7:
@@ -354,7 +402,133 @@ class Navigator:
         visit_cost = min(3.5, 0.10 * self.visit_counts.get(cell, 0))
         return step_cost + wall_cost + known_cost + visit_cost
 
-    def build_path(self, start_xy, goal_xy):
+    def line_is_open(self, start_xy, end_xy):
+        start = self.grid_cell(*start_xy)
+        end = self.grid_cell(*end_xy)
+        for cell in self.trace_cells(start, end):
+            if cell in self.blocked_cells:
+                return False
+        return True
+
+    def frontier_score(self, cell, robot_cell, yaw):
+        cx, cy = cell
+        unknown = 0
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1),
+                       (1, 1), (1, -1), (-1, 1), (-1, -1)):
+            nxt = (cx + dx, cy + dy)
+            if nxt not in self.free_cells and nxt not in self.blocked_cells:
+                unknown += 1
+        if unknown == 0:
+            return -INF
+
+        wx = cx * self.map_resolution
+        wy = cy * self.map_resolution
+        rx = robot_cell[0] * self.map_resolution
+        ry = robot_cell[1] * self.map_resolution
+        distance = math.hypot(wx - rx, wy - ry)
+        if distance < 0.75 or distance > 5.8:
+            return -INF
+
+        direction = math.atan2(wy - ry, wx - rx)
+        heading_bonus = math.cos(wrap(direction - yaw))
+        forward_bonus = math.cos(wrap(direction - self.forward_bias_yaw))
+        route_bonus = 0.0
+        if self.checkpoints == 1 and self.previous_checkpoint is not None:
+            px, py = self.previous_checkpoint
+            ux = math.cos(self.forward_bias_yaw)
+            uy = math.sin(self.forward_bias_yaw)
+            vx = wx - px
+            vy = wy - py
+            progress = vx * ux + vy * uy
+            lateral = abs(vx * -uy + vy * ux)
+            if progress < -0.25:
+                return -INF
+            route_bonus = 2.8 * forward_bonus - 0.9 * max(0.0, lateral - 0.9)
+        wall_distance = self.distance_to_wall_cells(cell)
+        if wall_distance <= 2:
+            wall_bonus = -3.0
+        elif wall_distance <= 6:
+            wall_bonus = 1.4
+        else:
+            wall_bonus = -0.6
+
+        visits = self.visit_counts.get(cell, 0)
+        return (2.2 * unknown + 2.0 * heading_bonus + 1.0 * forward_bonus + route_bonus +
+                wall_bonus + 0.18 * distance - 1.5 * visits)
+
+    def open_space_goal(self, scan, x, y, yaw):
+        bearings = np.linspace(-self.fov / 2.0, self.fov / 2.0,
+                               self.scan_size, endpoint=True)
+        rr = np.asarray(scan)
+        candidates = []
+        for angle in np.radians(np.arange(-95.0, 96.0, 5.0)):
+            delta = np.abs((bearings - angle + math.pi) % (2.0 * math.pi) - math.pi)
+            values = rr[delta <= math.radians(7.5)]
+            if values.size == 0:
+                continue
+            clear = float(np.percentile(values, 18.0))
+            if not math.isfinite(clear):
+                clear = self.max_range
+            clear = clamp(clear, 0.0, self.max_range)
+            if clear < 0.75:
+                continue
+            heading_bonus = math.cos(angle)
+            forward_bonus = math.cos(wrap(yaw + angle - self.forward_bias_yaw))
+            bias_weight = 2.4 if self.checkpoints == 1 else 0.9
+            score = 1.4 * heading_bonus + bias_weight * forward_bonus + 0.22 * clear
+            candidates.append((score, angle, clear))
+        if not candidates:
+            return None
+        _, angle, clear = max(candidates)
+        distance = clamp(clear - 0.55, 0.9, 2.2)
+        return (x + distance * math.cos(yaw + angle),
+                y + distance * math.sin(yaw + angle))
+
+    def choose_exploration_goal(self, x, y, yaw):
+        robot_cell = self.grid_cell(x, y)
+        old_goal = self.exploration_goal
+        if old_goal is not None:
+            old_cell = self.grid_cell(*old_goal)
+            old_distance = math.hypot(old_goal[0] - x, old_goal[1] - y)
+            old_score = self.frontier_score(old_cell, robot_cell, yaw)
+            if old_distance > 0.45 and old_score > 2.0:
+                return old_goal
+
+        best_cell = None
+        best_score = -INF
+        max_cells = int(6.0 / self.map_resolution)
+        for cell in self.free_cells:
+            if abs(cell[0] - robot_cell[0]) > max_cells:
+                continue
+            if abs(cell[1] - robot_cell[1]) > max_cells:
+                continue
+            score = self.frontier_score(cell, robot_cell, yaw)
+            if score > best_score:
+                best_cell = cell
+                best_score = score
+        if best_cell is None:
+            return None
+        self.exploration_goal = (best_cell[0] * self.map_resolution,
+                                 best_cell[1] * self.map_resolution)
+        return self.exploration_goal
+
+    def route_rejoin_goal(self, x, y):
+        if self.checkpoints != 1 or self.previous_checkpoint is None:
+            return None
+        px, py = self.previous_checkpoint
+        ux = math.cos(self.forward_bias_yaw)
+        uy = math.sin(self.forward_bias_yaw)
+        vx = x - px
+        vy = y - py
+        progress = vx * ux + vy * uy
+        lateral = vx * -uy + vy * ux
+        ahead = max(0.8, progress + 1.25)
+        correction = clamp(lateral, -1.2, 1.2)
+        gx = px + ahead * ux + (-correction) * -uy
+        gy = py + ahead * uy + (-correction) * ux
+        return gx, gy
+
+    def build_path(self, start_xy, goal_xy, relaxed=False):
         start = self.grid_cell(*start_xy)
         goal = self.grid_cell(*goal_xy)
         margin = int(3.8 / self.map_resolution)
@@ -362,13 +536,21 @@ class Navigator:
         hi_x = max(start[0], goal[0]) + margin
         lo_y = min(start[1], goal[1]) - margin
         hi_y = max(start[1], goal[1]) + margin
-        blocked = self.blocked_cells
+        blocked = self.hard_wall_cells if relaxed else self.blocked_cells
         # The robot and marker cells must remain legal even next to an inflated wall.
+        start_radius = 4 if relaxed else 3
+        goal_radius = 3 if relaxed else 2
         allowed = {(start[0] + dx, start[1] + dy)
-                   for dx in range(-2, 3) for dy in range(-2, 3)
-                   if dx * dx + dy * dy <= 4}
+                   for dx in range(-start_radius, start_radius + 1)
+                   for dy in range(-start_radius, start_radius + 1)
+                   if dx * dx + dy * dy <= start_radius * start_radius}
         allowed.update({(goal[0] + dx, goal[1] + dy)
-                        for dx in range(-1, 2) for dy in range(-1, 2)})
+                        for dx in range(-goal_radius, goal_radius + 1)
+                        for dy in range(-goal_radius, goal_radius + 1)
+                        if dx * dx + dy * dy <= goal_radius * goal_radius})
+        def is_blocked(cell):
+            return cell in blocked and cell not in allowed
+
         frontier = [(0.0, start)]
         cost = {start: 0.0}
         parent = {}
@@ -387,18 +569,18 @@ class Navigator:
                 nxt = (current[0] + dx, current[1] + dy)
                 if not (lo_x <= nxt[0] <= hi_x and lo_y <= nxt[1] <= hi_y):
                     continue
-                if nxt in blocked and nxt not in allowed:
+                if is_blocked(nxt):
                     continue
                 # Do not cut diagonally through an occupied corner.
-                if dx and dy and (((current[0] + dx, current[1]) in blocked) or
-                                  ((current[0], current[1] + dy) in blocked)):
+                if dx and dy and (is_blocked((current[0] + dx, current[1])) or
+                                  is_blocked((current[0], current[1] + dy))):
                     continue
                 new_cost = base + self.traversal_cost(nxt, step_cost)
                 if new_cost >= cost.get(nxt, INF):
                     continue
                 cost[nxt] = new_cost
                 parent[nxt] = current
-                heuristic = math.hypot(goal[0] - nxt[0], goal[1] - nxt[1])
+                heuristic = 1.05 * math.hypot(goal[0] - nxt[0], goal[1] - nxt[1])
                 heapq.heappush(frontier, (new_cost + heuristic, nxt))
         if not found:
             return []
@@ -416,45 +598,120 @@ class Navigator:
             visited = np.asarray([(x, y, c) for (x, y), c in self.visit_counts.items()],
                                  dtype=np.int16)
             path = np.asarray(self.path, dtype=np.float32)
+            target = self.target if self.target is not None else (INF, INF)
+            state = np.asarray([self.checkpoints, target[0], target[1],
+                                self.forward_bias_yaw], dtype=np.float32)
             np.savez_compressed(
                 self.map_path,
                 resolution=np.asarray([self.map_resolution], dtype=np.float32),
                 walls=np.asarray(list(self.wall_cells), dtype=np.int16),
+                hard_walls=np.asarray(list(self.hard_wall_cells), dtype=np.int16),
                 blocked=np.asarray(list(self.blocked_cells), dtype=np.int16),
                 free=np.asarray(list(self.free_cells), dtype=np.int16),
                 visited=visited,
                 path=path,
+                state=state,
             )
         except OSError:
             pass
 
-    def planned_heading(self, x, y, yaw, now):
-        if self.target is None:
+    def planned_heading(self, x, y, yaw, now, desired, scan):
+        goal_kind = "marker" if self.target is not None else "frontier"
+        goal = self.target
+        if goal is None:
+            route_goal = self.route_rejoin_goal(x, y)
+            if route_goal is not None:
+                goal = route_goal
+                goal_kind = "route"
+            else:
+                goal = self.choose_exploration_goal(x, y, yaw)
+            if goal is None:
+                goal = self.open_space_goal(scan, x, y, yaw)
+                goal_kind = "open"
+        if goal is None:
             return None
+
+        direct = wrap(math.atan2(goal[1] - y, goal[0] - x) - yaw)
+        goal_distance = math.hypot(goal[0] - x, goal[1] - y)
+        if goal_kind == "marker" and goal_distance < 2.7 and abs(direct) < 1.45:
+            if self.line_is_open((x, y), goal):
+                return direct
+
         goal_changed = (self.path_goal is None or
-                        math.dist(self.path_goal, self.target) > 0.35)
+                        self.path_goal_kind != goal_kind or
+                        math.dist(self.path_goal, goal) > 0.45)
         if goal_changed or now >= self.next_plan_time or not self.path:
-            self.path = self.build_path((x, y), self.target)
-            self.path_goal = self.target
-            self.next_plan_time = now + 0.45
+            self.path = self.build_path((x, y), goal)
+            if not self.path:
+                self.path = self.build_path((x, y), goal, relaxed=True)
+            if not self.path and goal_kind == "frontier":
+                open_goal = self.open_space_goal(scan, x, y, yaw)
+                if open_goal is not None:
+                    goal = open_goal
+                    goal_kind = "open"
+                    self.path = self.build_path((x, y), goal)
+                    if not self.path:
+                        self.path = self.build_path((x, y), goal, relaxed=True)
+            self.path_goal = goal
+            self.path_goal_kind = goal_kind
+            self.next_plan_time = now + (0.35 if goal_kind == "marker" else 0.65)
         if not self.path:
+            if goal_kind == "marker" and goal_distance < 3.2:
+                return direct
             return None
+
+        if goal_kind == "marker" and math.hypot(goal[0] - x, goal[1] - y) < 1.4:
+            if self.line_is_open((x, y), goal) and abs(direct) < 1.35:
+                return direct
+
         # Drop passed cells, then aim far enough ahead for smooth quadruped motion.
         while len(self.path) > 2 and math.hypot(self.path[1][0] - x,
                                                 self.path[1][1] - y) < 0.30:
             self.path.pop(0)
         waypoint = self.path[-1]
+        lookahead = 0.78 if goal_kind == "marker" else 0.90
         for point in self.path[1:]:
             waypoint = point
-            if math.hypot(point[0] - x, point[1] - y) >= 0.70:
+            if math.hypot(point[0] - x, point[1] - y) >= lookahead:
                 break
-        return wrap(math.atan2(waypoint[1] - y, waypoint[0] - x) - yaw)
+        heading = wrap(math.atan2(waypoint[1] - y, waypoint[0] - x) - yaw)
+        if goal_kind != "marker" and abs(heading) > 1.35 and abs(desired) < 0.4:
+            heading = clamp(heading, -1.35, 1.35)
+        return heading
 
     def smooth_drive(self, vx, wz):
         dt = max(0.016, float(getattr(self.robot, "dt", 0.032)))
         self.vx_cmd += clamp(vx - self.vx_cmd, -0.75 * dt, 0.75 * dt)
         self.wz_cmd += clamp(wz - self.wz_cmd, -3.2 * dt, 3.2 * dt)
         self.robot.drive(vx=self.vx_cmd, vyaw=self.wz_cmd)
+
+    def update_stuck_state(self, x, y, now, scan):
+        if self.last_progress_pose is None:
+            self.last_progress_pose = (x, y, now)
+            self.stuck_since = None
+            return
+
+        px, py, pt = self.last_progress_pose
+        moved = math.hypot(x - px, y - py)
+        if moved > 0.24 or now - pt > 4.0:
+            self.last_progress_pose = (x, y, now)
+            self.stuck_since = None
+            return
+
+        if now - pt < 2.2:
+            return
+        if self.stuck_since is None:
+            self.stuck_since = now
+            return
+        if now - self.stuck_since < 1.3 or now < self.recovery_until:
+            return
+
+        left = self.sector_distance(scan, math.radians(68.0), math.radians(25.0))
+        right = self.sector_distance(scan, math.radians(-68.0), math.radians(25.0))
+        self.recovery_turn = 1.0 if left > right else -1.0
+        self.recovery_until = now + 1.8
+        self.path = []
+        self.exploration_goal = None
 
     def tick(self):
         now = self.robot.time()
@@ -469,6 +726,11 @@ class Navigator:
         if self.target is not None:
             distance = math.hypot(self.target[0] - x, self.target[1] - y)
             desired = wrap(math.atan2(self.target[1] - y, self.target[0] - x) - yaw)
+            if measurement is not None and self.visual_bearing is not None:
+                desired = clamp(self.visual_bearing, -1.35, 1.35)
+            self.forward_bias_yaw = math.atan2(self.target[1] - y, self.target[0] - x)
+        elif now >= self.recovery_until:
+            self.forward_bias_yaw = blend_angle(self.forward_bias_yaw, yaw, 0.04)
 
         # Entering the marker centre is enough to make checkpoint scoring deterministic,
         # even when the camera lost the floor marker about half a metre earlier.
@@ -487,33 +749,52 @@ class Navigator:
 
         scan = self.obstacle_scan()
         self.update_map(scan, x, y, yaw)
-        map_heading = self.planned_heading(x, y, yaw, now)
+        self.update_stuck_state(x, y, now, scan)
+        map_heading = self.planned_heading(x, y, yaw, now, desired, scan)
         self.save_lidar_map(now)
-        if map_heading is None:
+        if now < self.recovery_until:
+            heading = self.recovery_turn * 1.10
+            clearance = self.sector_distance(scan, heading, math.radians(20.0))
+            front = self.sector_distance(scan, 0.0, math.radians(16.0))
+        elif map_heading is None:
             heading, clearance, front = self.choose_heading(scan, desired)
         else:
             # A* already includes the inflated robot footprint.  Use the lidar once
             # more as an emergency short-range guard, not as the route selector.
-            heading = clamp(map_heading, -1.50, 1.50)
+            heading = clamp(map_heading, -1.45, 1.45)
             clearance = self.sector_distance(scan, heading, math.radians(18.0))
             front = self.sector_distance(scan, 0.0, math.radians(16.0))
             self.turn_lock_until = -1.0
             self.turn_memory = 0.0
+            if measurement is not None and self.visual_bearing is not None:
+                visual_clearance = self.sector_distance(scan, self.visual_bearing,
+                                                        math.radians(18.0))
+                if visual_clearance > 0.42:
+                    heading = clamp(0.70 * heading + 0.30 * self.visual_bearing,
+                                    -1.45, 1.45)
+                    clearance = min(clearance, visual_clearance)
+            if front < 0.52 or clearance < 0.48:
+                detour, detour_clearance, _ = self.choose_heading(scan, desired)
+                if detour_clearance > clearance + 0.06:
+                    heading = detour
+                    clearance = detour_clearance
 
-        turn = clamp(1.7 * heading, -1.15, 1.15)
+        turn = clamp(1.8 * heading, -1.18, 1.18)
         a = abs(heading)
-        if front < 0.43 or a > 1.05:
-            speed = 0.035
+        if now < self.recovery_until:
+            speed = 0.045
+        elif front < 0.45 or a > 1.05:
+            speed = 0.055
         elif a > 0.65:
-            speed = 0.14
+            speed = 0.16
         elif a > 0.32:
-            speed = 0.29
+            speed = 0.31
         else:
-            speed = 0.38
-        if clearance < 0.30:
+            speed = 0.44
+        if clearance < 0.28:
             speed = 0.0
-        speed *= clamp((front - 0.28) / 0.65, 0.18, 1.0)
-        speed *= clamp((clearance - 0.25) / 0.60, 0.25, 1.0)
+        speed *= clamp((front - 0.30) / 0.70, 0.16, 1.0)
+        speed *= clamp((clearance - 0.24) / 0.62, 0.22, 1.0)
         if distance < 0.75:
             speed = min(speed, 0.28)
         if distance < 0.38:
