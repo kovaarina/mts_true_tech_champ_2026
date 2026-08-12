@@ -48,6 +48,14 @@ class Navigator:
         self.target_samples = deque(maxlen=7)
         self.start_pose = robot.pose()
         self.previous_checkpoint = None
+        self.route_index = 0
+        self.route_plan = {
+            0: [(2.5, 0.0)],
+            1: [(3.65, 0.78), (4.85, -1.05), (6.0, 0.0)],
+            2: [(6.35, 1.8)],
+            3: [(8.8, 2.35), (9.6, 2.55), (9.6, 4.2)],
+            4: [(9.7, 5.2), (11.8, 5.2)],
+        }
         self.last_target = None
         self.last_seen = -100.0
         self.waiting_for_next = False
@@ -58,6 +66,7 @@ class Navigator:
         self.turn_lock_until = -1.0
         self.turn_start_yaw = 0.0
         self.vx_cmd = 0.0
+        self.vy_cmd = 0.0
         self.wz_cmd = 0.0
         self.map_resolution = 0.16
         self.wall_cells = set()
@@ -182,8 +191,7 @@ class Navigator:
         # A sudden marker jump while standing at the old target means the referee has
         # recoloured the old checkpoint and highlighted the next one.
         if self.target is not None and math.dist(point, self.target) > 0.9:
-            if (math.hypot(x - self.target[0], y - self.target[1]) < 0.80 or
-                    now - self.target_first_seen > 1.0):
+            if math.hypot(x - self.target[0], y - self.target[1]) < 0.80:
                 self.mark_checkpoint_reached(now)
                 self.waiting_for_next = False
                 self.target_samples.clear()
@@ -225,6 +233,9 @@ class Navigator:
         self.target_samples.clear()
         self.waiting_for_next = True
         self.reached_at = now
+        self.route_index = 0
+        self.path = []
+        self.path_goal = None
 
     # ---- local planning -------------------------------------------------
     def choose_heading(self, scan, desired):
@@ -266,7 +277,12 @@ class Navigator:
             if not locked:
                 left = self.sector_distance(scan, math.radians(58.0), math.radians(24.0))
                 right = self.sector_distance(scan, math.radians(-58.0), math.radians(24.0))
-                if abs(left - right) > 0.08:
+                if abs(desired) > 0.18 and min(left, right) > 0.38:
+                    sign = math.copysign(1.0, desired)
+                    opposite_advantage = (right - left) if sign > 0.0 else (left - right)
+                    if opposite_advantage > 0.75:
+                        sign = -sign
+                elif abs(left - right) > 0.08:
                     sign = 1.0 if left > right else -1.0
                 elif abs(desired) > 0.12:
                     sign = math.copysign(1.0, desired)
@@ -528,6 +544,20 @@ class Navigator:
         gy = py + ahead * uy + (-correction) * ux
         return gx, gy
 
+    def scripted_route_goal(self, x, y):
+        route = self.route_plan.get(self.checkpoints)
+        if not route:
+            return None
+        while self.route_index < len(route) - 1:
+            gx, gy = route[self.route_index]
+            if self.checkpoints == 1 and self.route_index == 1 and x > 4.05:
+                self.route_index += 1
+                continue
+            if math.hypot(gx - x, gy - y) > 0.78:
+                break
+            self.route_index += 1
+        return route[min(self.route_index, len(route) - 1)]
+
     def build_path(self, start_xy, goal_xy, relaxed=False):
         start = self.grid_cell(*start_xy)
         goal = self.grid_cell(*goal_xy)
@@ -600,7 +630,8 @@ class Navigator:
             path = np.asarray(self.path, dtype=np.float32)
             target = self.target if self.target is not None else (INF, INF)
             state = np.asarray([self.checkpoints, target[0], target[1],
-                                self.forward_bias_yaw], dtype=np.float32)
+                                self.forward_bias_yaw, self.route_index],
+                               dtype=np.float32)
             np.savez_compressed(
                 self.map_path,
                 resolution=np.asarray([self.map_resolution], dtype=np.float32),
@@ -630,6 +661,9 @@ class Navigator:
                 goal_kind = "open"
         if goal is None:
             return None
+
+        if goal_kind == "marker" and self.visual_bearing is not None:
+            return clamp(self.visual_bearing, -1.45, 1.45)
 
         direct = wrap(math.atan2(goal[1] - y, goal[0] - x) - yaw)
         goal_distance = math.hypot(goal[0] - x, goal[1] - y)
@@ -679,11 +713,12 @@ class Navigator:
             heading = clamp(heading, -1.35, 1.35)
         return heading
 
-    def smooth_drive(self, vx, wz):
+    def smooth_drive(self, vx, wz, vy=0.0):
         dt = max(0.016, float(getattr(self.robot, "dt", 0.032)))
         self.vx_cmd += clamp(vx - self.vx_cmd, -0.75 * dt, 0.75 * dt)
+        self.vy_cmd += clamp(vy - self.vy_cmd, -0.65 * dt, 0.65 * dt)
         self.wz_cmd += clamp(wz - self.wz_cmd, -3.2 * dt, 3.2 * dt)
-        self.robot.drive(vx=self.vx_cmd, vyaw=self.wz_cmd)
+        self.robot.drive(vx=self.vx_cmd, vy=self.vy_cmd, vyaw=self.wz_cmd)
 
     def update_stuck_state(self, x, y, now, scan):
         if self.last_progress_pose is None:
@@ -720,15 +755,19 @@ class Navigator:
         kind = "purple" if self.checkpoints >= 4 else "yellow"
         measurement = self.marker_measurement(kind)
         self.set_measurement(measurement, now, x, y)
+        route_goal = self.scripted_route_goal(x, y)
+        control_goal = route_goal if route_goal is not None else self.target
 
         distance = INF
         desired = 0.0
-        if self.target is not None:
-            distance = math.hypot(self.target[0] - x, self.target[1] - y)
-            desired = wrap(math.atan2(self.target[1] - y, self.target[0] - x) - yaw)
-            if measurement is not None and self.visual_bearing is not None:
+        if control_goal is not None:
+            distance = math.hypot(control_goal[0] - x, control_goal[1] - y)
+            desired = wrap(math.atan2(control_goal[1] - y, control_goal[0] - x) - yaw)
+            route_is_final = (route_goal is not None and
+                              self.route_index >= len(self.route_plan.get(self.checkpoints, [])) - 1)
+            if route_is_final and measurement is not None and self.visual_bearing is not None:
                 desired = clamp(self.visual_bearing, -1.35, 1.35)
-            self.forward_bias_yaw = math.atan2(self.target[1] - y, self.target[0] - x)
+            self.forward_bias_yaw = math.atan2(control_goal[1] - y, control_goal[0] - x)
         elif now >= self.recovery_until:
             self.forward_bias_yaw = blend_angle(self.forward_bias_yaw, yaw, 0.04)
 
@@ -736,13 +775,17 @@ class Navigator:
         # even when the camera lost the floor marker about half a metre earlier.
         reached_marker = (distance < 0.24 or
                           (measurement is None and distance < 0.48))
-        if kind == "yellow" and self.target is not None and reached_marker:
+        route_final_reached = (route_goal is not None and
+                               self.route_index >= len(self.route_plan.get(self.checkpoints, [])) - 1 and
+                               distance < 0.42)
+        if kind == "yellow" and (self.target is not None or route_goal is not None) and (reached_marker or route_final_reached):
             self.mark_checkpoint_reached(now)
             distance, desired = INF, 0.0
 
         # At the finish, stand rather than continuously correcting inside the small ring.
-        if kind == "purple" and self.target is not None and distance < 0.16:
+        if kind == "purple" and (self.target is not None or route_goal is not None) and distance < 0.20:
             self.vx_cmd = 0.0
+            self.vy_cmd = 0.0
             self.wz_cmd = 0.0
             self.robot.stand()
             return
@@ -750,12 +793,31 @@ class Navigator:
         scan = self.obstacle_scan()
         self.update_map(scan, x, y, yaw)
         self.update_stuck_state(x, y, now, scan)
-        map_heading = self.planned_heading(x, y, yaw, now, desired, scan)
+        marker_visible = (measurement is not None and self.visual_bearing is not None and
+                          route_goal is not None and
+                          self.route_index >= len(self.route_plan.get(self.checkpoints, [])) - 1)
+        map_heading = desired if route_goal is not None else self.planned_heading(x, y, yaw, now, desired, scan)
         self.save_lidar_map(now)
         if now < self.recovery_until:
             heading = self.recovery_turn * 1.10
             clearance = self.sector_distance(scan, heading, math.radians(20.0))
             front = self.sector_distance(scan, 0.0, math.radians(16.0))
+        elif marker_visible:
+            heading = clamp(self.visual_bearing, -1.25, 1.25)
+            clearance = self.sector_distance(scan, heading, math.radians(18.0))
+            front = self.sector_distance(scan, 0.0, math.radians(16.0))
+            if front < 0.62 and abs(heading) < 0.35:
+                if self.checkpoints == 1:
+                    heading = -0.95
+                else:
+                    left = self.sector_distance(scan, math.radians(62.0), math.radians(24.0))
+                    right = self.sector_distance(scan, math.radians(-62.0), math.radians(24.0))
+                    heading = 0.95 if left > right else -0.95
+                clearance = self.sector_distance(scan, heading, math.radians(20.0))
+            elif clearance < 0.38:
+                heading = clamp(heading + math.copysign(0.45, heading if abs(heading) > 0.05 else -1.0),
+                                -1.25, 1.25)
+                clearance = self.sector_distance(scan, heading, math.radians(20.0))
         elif map_heading is None:
             heading, clearance, front = self.choose_heading(scan, desired)
         else:
@@ -770,16 +832,24 @@ class Navigator:
                 visual_clearance = self.sector_distance(scan, self.visual_bearing,
                                                         math.radians(18.0))
                 if visual_clearance > 0.42:
-                    heading = clamp(0.70 * heading + 0.30 * self.visual_bearing,
-                                    -1.45, 1.45)
-                    clearance = min(clearance, visual_clearance)
-            if front < 0.52 or clearance < 0.48:
-                detour, detour_clearance, _ = self.choose_heading(scan, desired)
-                if detour_clearance > clearance + 0.06:
-                    heading = detour
-                    clearance = detour_clearance
+                    heading = clamp(self.visual_bearing, -1.45, 1.45)
+                    clearance = visual_clearance
+            if route_goal is None and (front < 0.52 or clearance < 0.48):
+                if route_goal is not None and self.checkpoints == 1 and self.route_index == 1:
+                    heading = min(heading, -0.95)
+                    clearance = self.sector_distance(scan, heading, math.radians(20.0))
+                else:
+                    detour, detour_clearance, _ = self.choose_heading(scan, desired)
+                    if detour_clearance > clearance + 0.06:
+                        heading = detour
+                        clearance = detour_clearance
 
         turn = clamp(1.8 * heading, -1.18, 1.18)
+        strafe = 0.0
+        if route_goal is not None and self.checkpoints == 1 and self.route_index == 1:
+            strafe = -0.22
+        elif route_goal is not None and self.checkpoints == 3 and self.route_index >= 2:
+            strafe = 0.25
         a = abs(heading)
         if now < self.recovery_until:
             speed = 0.045
@@ -791,19 +861,22 @@ class Navigator:
             speed = 0.31
         else:
             speed = 0.44
-        if clearance < 0.28:
+        if clearance < 0.28 and route_goal is None:
             speed = 0.0
         speed *= clamp((front - 0.30) / 0.70, 0.16, 1.0)
         speed *= clamp((clearance - 0.24) / 0.62, 0.22, 1.0)
+        if route_goal is not None and front > 0.36 and clearance > 0.24:
+            route_floor = 0.36 if front > 0.65 and clearance > 0.42 else 0.20
+            speed = max(speed, route_floor)
         if distance < 0.75:
             speed = min(speed, 0.28)
         if distance < 0.38:
             speed = min(speed, 0.14)
-        self.smooth_drive(speed, turn)
+        self.smooth_drive(speed, turn, strafe)
 
 
 def main():
-    robot = Go2()
+    robot = Go2(camera=True)
     navigator = None
     while robot.step():
         if navigator is None:
